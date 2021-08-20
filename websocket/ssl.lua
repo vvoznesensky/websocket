@@ -59,6 +59,7 @@ ffi.cdef[[
 
  void SSL_set_connect_state(SSL *s);
  void SSL_set_accept_state(SSL *s);
+ int SSL_connect(SSL *ssl);
 
  int SSL_write(SSL *ssl, const void *buf, int num);
  int SSL_read(SSL *ssl, void *buf, int num);
@@ -477,6 +478,8 @@ function sslsocket.read(self, opts, timeout)
 end
 
 local function tcp_connect(host, port, timeout, sslctx)
+    local start = clock.time()
+
     if sslctx == nil then
         sslctx = default_ctx
     end
@@ -502,8 +505,39 @@ local function tcp_connect(host, port, timeout, sslctx)
         return nil, 'SSL_set_fd failed'
     end
 
-    ffi.C.ERR_clear_error()
-    ffi.C.SSL_set_connect_state(ssl);
+    while true do
+        ffi.C.ERR_clear_error()
+        local num = ffi.C.SSL_connect(ssl)
+        if num <= 0 then
+            local ssl_error = ffi.C.SSL_get_error(ssl, num)
+            local rc = nil
+            if ssl_error == SSL_ERROR_WANT_READ then
+                rc = sock:readable(slice_wait(timeout, start))
+            elseif ssl_error == SSL_ERROR_WANT_WRITE then
+                rc = sock:writable(slice_wait(timeout, start))
+            elseif ssl_error == SSL_ERROR_ZERO_RETURN then
+                return nil, 'SSL_connect failed'
+            elseif ssl_error == SSL_ERROR_SYSCALL then
+                if errno() == 0 then
+                    break
+                else
+                    ffi.C.SSL_shutdown(ssl)
+                    return nil, sock:error()
+                end
+            elseif ssl_error == SSL_ERROR_SSL then
+                ffi.C.SSL_shutdown(ssl)
+                return nil, 'SSL library error'
+            else
+                assert(false)
+            end
+            if not rc then
+                sock._errno = errno.ETIMEDOUT
+                return nil, 'Timeout exceeded'
+            end
+        else
+            break
+        end
+    end
 
     local self = setmetatable({}, sslsocket)
     rawset(self, 'sock', sock)

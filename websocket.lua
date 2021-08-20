@@ -1,5 +1,7 @@
 #!/usr/bin/env tarantool
 
+print("!!!")
+
 local errno = require('errno')
 
 local socket = require('socket')
